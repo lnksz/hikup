@@ -1,0 +1,12 @@
+[Unit]
+Description=Hikup - Docker container updater
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/bin/hikup
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

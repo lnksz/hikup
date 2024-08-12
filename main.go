@@ -17,6 +17,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"gopkg.in/yaml.v3"
 )
@@ -167,5 +169,99 @@ func containsName(names []string, target string) bool {
 }
 
 func updateContainer(cli *client.Client, cont types.Container) {
-	// ... (rest of the updateContainer function remains the same)
+	ctx := context.Background()
+
+	// Inspect the container to get its full configuration
+	inspectData, err := cli.ContainerInspect(ctx, cont.ID)
+	if err != nil {
+		log.Printf("Error inspecting container %s: %v", cont.ID[:12], err)
+		return
+	}
+
+	// Pull the latest image
+	_, err = cli.ImagePull(ctx, cont.Image, image.PullOptions{})
+	if err != nil {
+		log.Printf("Error pulling image for container %s: %v", cont.ID[:12], err)
+		return
+	}
+
+	log.Printf("Pulled latest image for container %s", cont.ID[:12])
+
+	// Stop the container
+	timeout := 10 // int seconds
+	so := container.StopOptions{Timeout: &timeout}
+	err = cli.ContainerStop(ctx, cont.ID, so)
+	if err != nil {
+		log.Printf("Error stopping container %s: %v", cont.ID[:12], err)
+		return
+	}
+
+	// Remove the container
+	err = cli.ContainerRemove(ctx, cont.ID, container.RemoveOptions{RemoveVolumes: false, RemoveLinks: false, Force: true})
+	if err != nil {
+		log.Printf("Error removing container %s: %v", cont.ID[:12], err)
+		return
+	}
+
+	// Prepare the container configuration
+	config := &container.Config{
+		Image:        cont.Image,
+		Cmd:          inspectData.Config.Cmd,
+		Env:          inspectData.Config.Env,
+		ExposedPorts: inspectData.Config.ExposedPorts,
+		Labels:       inspectData.Config.Labels,
+		Volumes:      inspectData.Config.Volumes,
+		WorkingDir:   inspectData.Config.WorkingDir,
+		Entrypoint:   inspectData.Config.Entrypoint,
+	}
+
+	// Prepare the host configuration
+	hostConfig := &container.HostConfig{
+		Binds:           inspectData.HostConfig.Binds,
+		PortBindings:    inspectData.HostConfig.PortBindings,
+		RestartPolicy:   inspectData.HostConfig.RestartPolicy,
+		NetworkMode:     inspectData.HostConfig.NetworkMode,
+		Privileged:      inspectData.HostConfig.Privileged,
+		PublishAllPorts: inspectData.HostConfig.PublishAllPorts,
+		VolumesFrom:     inspectData.HostConfig.VolumesFrom,
+	}
+
+	// Prepare the network configuration
+	endpointsConfig := make(map[string]*network.EndpointSettings)
+	for netName, netConfig := range inspectData.NetworkSettings.Networks {
+		endpointsConfig[netName] = &network.EndpointSettings{
+			IPAMConfig:          netConfig.IPAMConfig,
+			Links:               netConfig.Links,
+			Aliases:             netConfig.Aliases,
+			NetworkID:           netConfig.NetworkID,
+			EndpointID:          netConfig.EndpointID,
+			Gateway:             netConfig.Gateway,
+			IPAddress:           netConfig.IPAddress,
+			IPPrefixLen:         netConfig.IPPrefixLen,
+			IPv6Gateway:         netConfig.IPv6Gateway,
+			GlobalIPv6Address:   netConfig.GlobalIPv6Address,
+			GlobalIPv6PrefixLen: netConfig.GlobalIPv6PrefixLen,
+			MacAddress:          netConfig.MacAddress,
+		}
+	}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: endpointsConfig,
+	}
+
+	// Create a new container with the same configuration
+	resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, inspectData.Name[1:]) // Remove leading slash from name
+	if err != nil {
+		log.Printf("Error creating new container: %v", err)
+		return
+	}
+
+	// Start the new container
+	err = cli.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	if err != nil {
+		log.Printf("Error starting new container: %v", err)
+		return
+	}
+
+	log.Printf("Successfully updated container %s to %s", cont.ID[:12], resp.ID[:12])
 }
